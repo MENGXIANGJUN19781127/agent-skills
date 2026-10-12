@@ -92,16 +92,30 @@ def tokenize(text: str) -> list[str]:
             text = str(text)
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text)
-    return text.split()
+    tokens: list[str] = []
+    for token in text.split():
+        # CJK runs have no whitespace boundaries: a whole Chinese sentence would
+        # otherwise become ONE token and match nothing in the index. Emit
+        # bigrams (plus the token itself when it is a single CJK char) so a
+        # Chinese query can hit Chinese corpus text. ASCII tokens pass through
+        # unchanged.
+        if len(token) == 1 or not any("\u4e00" <= ch <= "\u9fff" for ch in token):
+            tokens.append(token)
+            continue
+        if len(token) == 2:
+            tokens.append(token)
+        for i in range(len(token) - 1):
+            tokens.append(token[i : i + 2])
+    return tokens
 
 
 # ─── Skill corpus loader ──────────────────────────────────────────────────────
 
-def _parse_skill_md(skill_md: Path) -> tuple[str, str]:
-    """Return (name, description) parsed from a SKILL.md frontmatter.
+def _parse_skill_md(skill_md: Path) -> tuple[str, str, str]:
+    """Return (name, description, body_preview) parsed from a SKILL.md frontmatter.
 
-    Returns ("", "") for valid frontmatter with missing name/description.
-    Returns ("", "") for invalid frontmatter (no fences, malformed YAML,
+    Returns ("", "", "") for valid frontmatter with missing name/description.
+    Returns ("", "", "") for invalid frontmatter (no fences, malformed YAML,
     non-mapping) and for a file that cannot be read. Never raises, so one
     unreadable skill cannot abort the whole index build.
     """
@@ -148,7 +162,13 @@ def _parse_skill_md(skill_md: Path) -> tuple[str, str]:
 
     name_str = "" if name is None else str(name)
     desc_str = "" if desc is None else str(desc)
-    return name_str, desc_str
+    # Body preview (first ~3000 chars after the frontmatter) joins the BM25
+    # corpus: Chinese queries match skill CONTENT, not just the (usually
+    # English) description. Size-capped so one huge SKILL.md cannot bloat
+    # the index build.
+    body_lines = lines[close_idx + 1 :]
+    body_preview = " ".join(line.strip() for line in body_lines if line.strip())[:3000]
+    return name_str, desc_str, body_preview
 
 
 def _iter_skill_files(root: Path, prefix: str = "") -> list[tuple[Path, str, str]]:
@@ -415,7 +435,7 @@ def _load_active_skills_legacy(
         if leaf_name in disabled or rel_name in disabled:
             continue
 
-        name, desc = _parse_skill_md(skill_md)
+        name, desc, body_preview = _parse_skill_md(skill_md)
         if not name:
             name = leaf_name
 
@@ -424,7 +444,10 @@ def _load_active_skills_legacy(
             "leaf_name": leaf_name,
             "name": name,
             "description": desc,
-            "text": f"{name}: {desc}",
+            # Body preview joins the indexed text so CJK queries (bigrams) can
+            # hit skill content beyond the frontmatter — most writing-skill
+            # descriptions are English while queries are Chinese.
+            "text": f"{name}: {desc}\n{body_preview}",
             # Legacy/fallback entries are not the plugin directory scan.
             "plugin_origin": False,
         })
