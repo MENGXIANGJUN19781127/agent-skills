@@ -13,6 +13,7 @@ the implementation is original.
 - When to run
 - Loop
 - Evidence store (Step 3b.1)
+- Quote anchoring (`check-quote`, v1.8.2)
 - Known scoring limitations
 - Tests
 
@@ -27,9 +28,10 @@ python3 <skill_dir>/scripts/research_validation.py verify-claims    --dir <run_d
 ```
 
 **Optional advisory pre-screen (`--jev-prescreen`, v1.8.1).** On instances with a
-TypeSafe Jev trial (`TYPESAFE_KEY`, prescreen module in the jev-trial dir),
-`verify-claims --jev-prescreen` first runs a semantic pre-screen: one System One
-Choice per claim (supported / partial / unsupported), compared against the
+TypeSafe Jev trial (`TYPESAFE_KEY`, prescreen module location set via the
+`JEV_PRESCREEN_PATH` environment variable), `verify-claims --jev-prescreen`
+first runs a semantic pre-screen: one System One choice per claim
+(supported / partial / unsupported), compared against the
 deterministic scorer. Confident disagreements print as `JEV-PRESCREEN advisory`
 lines (stderr) plus a summary JSON — false-red candidates (gate capped a
 semantically-supported claim) and false-green candidates (tokens matched but
@@ -106,6 +108,73 @@ python3 <skill_dir>/scripts/research_validation.py add-evidence --dir <run_dir> 
   gates.
 - On context compaction, the store is ground truth — re-read `claims.jsonl`
   instead of trusting compressed memory.
+- **Save each fetched page's text** to `<run_dir>/pages/<source_id>.txt` right
+  after `register-source` (for pages `web_extract` stored to disk, its reported
+  on-disk path can be passed to `check-quote --file` directly). This page-text
+  file is the substrate for quote anchoring — see next section.
+
+## Quote anchoring (`check-quote`, v1.8.2)
+
+Extraction-time fabrication guard, ported from
+[AnotiaWang/deep-research-web-ui](https://github.com/AnotiaWang/deep-research-web-ui)'s
+`shared/utils/search-learning.ts`: a model-proposed excerpt becomes evidence
+only after literal containment matching against the retrieved text. Every
+snippet stored via `add-claim` / `add-evidence` must be a **verbatim contiguous
+excerpt** of the fetched page, anchored before storing:
+
+```bash
+python3 <skill_dir>/scripts/research_validation.py check-quote \
+  --dir <run_dir> --source-id <sid> --snippet "<copied excerpt>" [--snippet "..."]
+python3 <skill_dir>/scripts/research_validation.py check-quote \
+  --file <path-to-page-text> --snippet "<copied excerpt>"
+```
+
+- Resolution: `--file` anchors against any page-text file; `--dir --source-id`
+  resolves `<run_dir>/pages/<source_id>.txt` and verifies the source_id exists
+  in `sources.jsonl` first. Errors (unknown source_id, missing page file,
+  unreadable input) exit 2.
+- Matching is **exact modulo Unicode whitespace runs** (`\s+` → one space on
+  both sides — no tokenizer). CJK and any other script anchor reliably, unlike
+  the tokenized `support_score` scorer.
+- Per-snippet output: `snippet_ok`, `chars`, and the 1-indexed `line` of the
+  first match in the page file (re-read around it for context on repair).
+- advisory `warning` for under-8-char snippets (too short to anchor) and
+  over-1500-char snippets (usually a whole paragraph, not the supporting run).
+  Warnings never change the exit code.
+- A failed match that *would* match after normalizing curly quotes / dashes /
+  figure-width spaces to ASCII emits `hint: quote-style mismatch` — re-copy the
+  excerpt with the page's original punctuation. Still a non-zero exit.
+- Exit codes: 0 all snippets matched · 1 at least one failed · 2 usage error.
+- **Repair-once rule (Step 3c):** on a mismatch, re-copy the excerpt exactly
+  from the page text once. Never massage the snippet toward the claim, never
+  splice across paragraphs, never add ellipses. If no contiguous supporting
+  excerpt exists, the claim is not evidence-backed: store it honestly
+  (`[REASONED]` / interpretive without a quote, or accept the red gate flag)
+  rather than smoothing it through. An unanchored snippet is itself a gate
+  defect — `verify-claims` scores whatever is stored and cannot detect a
+  well-paraphrased quote.
+
+## Support commands (v1.9.0)
+
+Not gates — helpers the SKILL.md workflow invokes. Both stdlib-only, offline.
+
+- `estimate-budget --breadth B --rounds R [--halving]` — upper bound of planned
+  queries, adapted from upstream `research-input.ts` `estimateMaxSearches()`.
+  Flat mode = breadth × rounds (the round loop). Tree mode (`--halving`) =
+  upstream's breadth-halving recursion, the upper bound when §3a deep-dive
+  chains are active. Breadth/rounds clamped to 1-8 (exit 2 outside). Test
+  vectors: flat (2,1)=2, (3,3)=9; tree (2,1)=2, (2,2)=4, (3,3)=15, (4,3)=20,
+  (4,5)=36.
+- `map-citations --report R.md [--citation N]` — maps each inline `[N]` citation
+  to the top-level markdown blocks citing it, adapted from upstream
+  `report-revision.ts` `findCitedReportBlocks()`. Fenced code and HTML/reference-
+  definition blocks are skipped (citation ranges inside code never map); tables
+  and lists stay whole blocks. Output carries `start_line`/`end_line` per block
+  (1-indexed, inclusive) for targeted edits, `sources_count` parsed from the
+  `## Sources` section, and per-citation block ids. Exits 0 ok · 1 when
+  `--citation` is given but no block cites it · 2 file problems. Used by
+  SKILL.md Step 6 (follow-up report revision); the three gates above must pass
+  on the revised report before delivery.
 
 ## Known scoring limitations
 
@@ -114,6 +183,21 @@ contradiction caps. Accepted limitations, by design:
 
 - Negation and polarity are not parsed.
 - Entity overlap can false-red on capitalized common nouns.
+- **Claim shape law (validated live): a claim scores "supported" only when ONE
+  of its stored snippets covers every figure, year and entity the claim text
+  carries.** Anything the claim names that its snippets lack caps the score at
+  PARTIAL−0.01 — a claim carrying three facts costs three snippets' coverage,
+  so split multi-fact claims or byte-align the claim to its quote. The
+  near-byte-identical claim is the only stable store form; prose paraphrase
+  stays in the report body.
+- **Entity matching is exact-set, not substring, and multi-word capitalized
+  runs glue into one token**: the page phrase "Scrape URL FIRECRAWL_SCRAPE"
+  forms the entity `scrape url`, so a claim saying just "Firecrawl" does NOT
+  set-match it (and vice versa). Do not glue capitalized words in a claim when
+  the snippet separates them.
+- **Alphanumeric brand prefixes tokenize as figures**: "x402" yields the
+  figure `402` and "v2.1.288" yields `2.1.288` — a claim containing such a
+  prefix caps unless its snippet contains the same brand text.
 - A missing signal in the snippet (no figures, no years) caps the score
   rather than proving support.
 - Magnitude abbreviations are normalised (`2.4bn` = `2.4b` = `2.4 billion`;
@@ -121,6 +205,23 @@ contradiction caps. Accepted limitations, by design:
   as different figures — write figures in one format per report.
 - A yearlike value adjacent to a magnitude word is treated as prose.
 - Digit runs inside product names ("iPhone15", "v2000") are figures, not years.
+
+## Store-loop hygiene (v1.9.1)
+
+When batching store subcommands inside one script loop, check EVERY response's
+JSON before printing progress — a rejected call (invalid `basis` or `kind`,
+duplicate claim_id) exits 2 silently while the loop's own "stored" message
+lies. `basis` takes ONLY the four labels (`verified|sourced|reasoned|
+estimated`); a source TIER name (`primary`/`secondary`) is not a basis value —
+the tier lives on the `register-source` record, the basis label on the claim.
+Diagnostics: import the script's helpers and print `_figures`/`_entities`/
+`_tokens` sets per claim-vs-snippet to see which axis capped the score.
+
+**Wrong-substrate anchors produce false reds**: `check-quote` reads
+`pages/<source_id>.txt` — verify the source_id resolves to the URL the quoted
+sentence actually came from before treating a mismatch as a fabrication signal
+(the same sentence lives on several pages; quoting against the wrong page
+file reads as unmatched even though the quote is real).
 
 ## Tests
 

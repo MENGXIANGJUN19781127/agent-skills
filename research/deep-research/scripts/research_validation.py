@@ -24,6 +24,11 @@ Usage:
   python3 research_validation.py register-source --dir DIR --json '{"url": "...", "title": "...", "quality": "primary"}'
   python3 research_validation.py add-claim --dir DIR --json '{"claim_id": "c1", "claim": "...", "kind": "factual", "snippet": "...", "source_id": "..."}'
   python3 research_validation.py add-evidence --dir DIR --json '{"claim_id": "c1", "snippet": "...", "source_id": "..."}'
+  python3 research_validation.py check-quote    --dir DIR --source-id SID --snippet "verbatim excerpt" [--snippet ...]
+                                                # page text must be saved at DIR/pages/<SID>.txt
+  python3 research_validation.py check-quote    --file PAGE.txt --snippet "verbatim excerpt" [--snippet ...]
+  python3 research_validation.py estimate-budget --breadth B --rounds R [--halving]
+  python3 research_validation.py map-citations  --report REPORT.md [--citation N]
   python3 research_validation.py verify-claims --dir DIR [--strict]
   python3 research_validation.py verify-citations --report REPORT.md
   python3 research_validation.py validate-report --report REPORT.md
@@ -34,6 +39,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -319,6 +325,247 @@ def cmd_add_evidence(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- quote anchoring
+
+QUOTE_STYLE_MAP = {
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u00a0": " ", "\u2007": " ", "\u202f": " ",
+}
+
+
+def _quote_style_relax(text: str) -> str:
+    out = text
+    for k, v in QUOTE_STYLE_MAP.items():
+        out = out.replace(k, v)
+    return out
+
+
+def _ws_normalize(text: str):
+    """Collapse Unicode whitespace runs to single spaces, like AnotiaWang's
+    `\\s+` -> ' ' match, and keep a normalized->original position map.
+
+    Returns (normalized, pos) where pos[j] is the index in the ORIGINAL text
+    of normalized character j (a whitespace run maps to its first char), so a
+    match can be reported as a real line number.
+    """
+    out, pos = [], []
+    prev_ws = False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not prev_ws and out:
+                out.append(" ")
+                pos.append(i)
+            prev_ws = True
+        else:
+            out.append(ch)
+            pos.append(i)
+            prev_ws = False
+    while out and out[-1] == " ":
+        out.pop()
+        pos.pop()
+    return "".join(out), pos
+
+
+def _orig_line_of(text: str, pos_map, norm_idx: int) -> int:
+    """1-indexed line of the ORIGINAL text for a normalized match position."""
+    if not pos_map:
+        return 1
+    orig_idx = pos_map[min(norm_idx, len(pos_map) - 1)]
+    return text.count("\n", 0, orig_idx) + 1
+
+
+def _resolve_page_text(args):
+    """Load the page text to anchor snippets against. Returns (text, label)
+    or (None, error-string) on any resolution problem."""
+    if args.file:
+        path = Path(args.file)
+        if not path.is_file():
+            return None, f"file not found: {path}"
+        try:
+            return path.read_text(encoding="utf-8", errors="replace"), str(path)
+        except OSError as e:
+            return None, f"unreadable file {path}: {e}"
+    if not args.dir or not args.source_id:
+        return None, ("check-quote needs --file PATH, or --dir DIR with --source-id SID "
+                      "(page text saved at DIR/pages/<SID>.txt)")
+    d = Path(args.dir)
+    sid = args.source_id.strip()
+    sources = _read_jsonl(d / "sources.jsonl")
+    if not any(s.get("source_id") == sid for s in sources):
+        return None, f"unknown source_id {sid} — register-source first"
+    page = d / "pages" / f"{sid}.txt"
+    if not page.is_file():
+        return None, (f"page text not saved: {page} — write the fetched page text there "
+                      "before anchoring quotes (Step 3b.1)")
+    try:
+        return page.read_text(encoding="utf-8", errors="replace"), str(page)
+    except OSError as e:
+        return None, f"unreadable page file {page}: {e}"
+
+
+def cmd_check_quote(args) -> int:
+    """Deterministic v1.8.2 quote anchoring (Step 3c): a stored snippet must be
+    a verbatim contiguous excerpt of the fetched page text. Pure substring
+    match modulo Unicode whitespace runs — no tokenizer, so CJK and any other
+    script anchor reliably. Exit 0 = all snippets matched, 1 = at least one
+    mismatched, 2 = usage/resolution error."""
+    if (args.file and (args.dir or args.source_id)):
+        print(json.dumps({"ok": False, "error": "pass --file, or --dir and --source-id — not both"}))
+        return 2
+    text, label = _resolve_page_text(args)
+    if text is None:
+        print(json.dumps({"ok": False, "error": label}))
+        return 2
+    hay, hay_map = _ws_normalize(text)
+    hay_relaxed = _quote_style_relax(hay)
+    results = []
+    for raw in (args.snippet or []):
+        sn, _ = _ws_normalize(raw)
+        if not sn:
+            results.append({"snippet_ok": False, "error": "empty snippet"})
+            continue
+        idx = hay.find(sn)
+        entry = {"snippet_ok": idx >= 0, "chars": len(sn)}
+        if idx >= 0:
+            entry["line"] = _orig_line_of(text, hay_map, idx)
+        if len(sn) < 8:
+            entry["warning"] = "snippet under 8 chars — too short to anchor; quote a longer run"
+        elif len(sn) > 1500:
+            entry["warning"] = ( "snippet over 1500 chars — usually a whole paragraph; "
+                                 "quote the tighter supporting run")
+        if idx < 0 and _quote_style_relax(sn) in hay_relaxed:
+            entry["hint"] = ("near-match ignoring quote/dash style — re-copy the excerpt "
+                             "VERBATIM with the page's original punctuation")
+        results.append(entry)
+    matched = sum(1 for r in results if r.get("snippet_ok"))
+    print(json.dumps({"ok": matched == len(results), "file": label,
+                      "matched": matched, "total": len(results), "snippets": results}))
+    return 0 if matched == len(results) else 1
+
+
+# ---------------------------------------------------------------- report support
+
+ESTIMATE_LIMITS = {1, 2, 3, 4, 5, 6, 7, 8}
+CIT_RE = re.compile(r"\[(\d+)\](?!\()")
+REF_DEF_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*\S")
+SOURCES_HEADING_RE = re.compile(r"^\s*#{2,3}\s*Sources\b", re.MULTILINE | re.IGNORECASE)
+
+
+def cmd_estimate_budget(args) -> int:
+    """Adapted from AnotiaWang/deep-research-web-ui `shared/utils/research-input.ts`
+    estimateMaxSearches(): upper bound of planned search queries.
+    flat: breadth per round × rounds. tree (--halving): each level spawns
+    ceil(width / 2) follow-up queries per node, mirroring the upstream
+    breadth-halving recursion — use as the upper bound when deep-dive chains
+    (SKILL.md §3a) are active."""
+    breadth, rounds = args.breadth, args.rounds
+    if breadth not in ESTIMATE_LIMITS or rounds not in ESTIMATE_LIMITS:
+        print(json.dumps({"ok": False,
+                          "error": f"breadth and rounds must be 1-8, got breadth={breadth}, rounds={rounds}"}))
+        return 2
+    if args.halving:
+        width, nodes, total = breadth, breadth, 0
+        for _ in range(rounds):
+            total += nodes
+            width = -(-width // 2)  # ceil, like upstream Math.ceil(width / 2)
+            nodes *= width
+    else:
+        total = breadth * rounds
+    print(json.dumps({"ok": True, "breadth": breadth, "rounds": rounds,
+                      "mode": "tree" if args.halving else "flat",
+                      "max_searches": total}))
+    return 0
+
+
+def _iter_blocks(lines):
+    """Top-level markdown blocks as (start_line, end_line, text) — 1-indexed,
+    end inclusive. Mirrors upstream findCitedReportBlocks: fenced code blocks
+    and HTML blocks are returned (so totals stay right) with a kind tag; space
+    runs are dropped. Tables and lists stay whole blocks (no blank lines)."""
+    block, start = [], None
+    kind = "md"
+    for i, raw in enumerate(lines, 1):
+        is_fence = bool(re.match(r"^\s{0,3}(```|~~~)", raw))
+        if kind == "code":
+            block.append(raw)
+            if is_fence:
+                yield (start, i, "".join(block), "code")
+                block, start, kind = [], None, "md"
+            continue
+        if is_fence:
+            # A fenced block can interrupt a paragraph: flush the md block first.
+            if block and start is not None:
+                yield (start, i - 1, "".join(block), kind)
+            kind, start, block = "code", i, [raw]
+            continue
+        if not raw.strip():
+            if block and start is not None:
+                yield (start, i - 1, "".join(block), kind)
+            block, start, kind = [], None, "md"
+            continue
+        if not block:
+            start = i
+            kind = "md"
+        block.append(raw)
+    if block and start is not None:
+        yield (start, len(lines), "".join(block), kind)
+
+
+def cmd_map_citations(args) -> int:
+    """Adapted from AnotiaWang/deep-research-web-ui `shared/utils/report-revision.ts`
+    findCitedReportBlocks(): map each inline [N] citation to the top-level
+    markdown blocks that cite it, so a follow-up revision can patch exactly the
+    cited blocks. Fenced code and HTML blocks are skipped (like upstream).
+    Exits 1 when --citation is given but no block cites that number."""
+    path = Path(args.report)
+    if not path.is_file():
+        print(json.dumps({"ok": False, "error": f"report not found: {path}"}))
+        return 2
+    text = path.read_text(encoding="utf-8", errors="replace")
+    blocks, skipped = [], {"code": 0, "html_def": 0}
+    for start, end, raw, kind in _iter_blocks(text.splitlines(keepends=True)):
+        if kind == "code":
+            skipped["code"] += 1
+            continue
+        if re.match(r"^\s{0,3}<", raw) or REF_DEF_RE.match(raw):
+            skipped["html_def"] += 1
+            continue
+        cites = sorted({int(n) for n in CIT_RE.findall(raw)})
+        if cites:
+            blocks.append({"id": len(blocks), "start_line": start, "end_line": end,
+                           "citations": cites, "preview": raw.strip()[:80]})
+    citations = {}
+    for b in blocks:
+        for n in b["citations"]:
+            citations.setdefault(n, []).append(b["id"])
+    m = SOURCES_HEADING_RE.search(text)
+    sources_count = None
+    if m:
+        entry_nums = set()
+        for line in text[m.start():].splitlines():
+            mm = re.match(r"^\[(\d+)\]\s+", line.strip()) or re.match(r"^\|\s*(\d+)\s*\|", line.strip())
+            if mm and not re.fullmatch(r"\|[\s\-|:]+\|", line.strip()):
+                entry_nums.add(int(mm.group(1)))
+        sources_count = len(entry_nums)
+    if args.citation is not None:
+        n = args.citation
+        if n not in citations:
+            print(json.dumps({"ok": False, "file": str(path), "citation": n,
+                              "error": f"no block cites [{n}]" ,
+                              "citations_in_body": sorted(citations)}))
+            return 1
+        blocks = [b for b in blocks if n in b["citations"]]
+    print(json.dumps({"ok": True, "file": str(path),
+                      "citation": args.citation, "sources_count": sources_count,
+                      "total_blocks": len(blocks), "skipped": skipped,
+                      "citations_in_body": sorted(citations),
+                      "citations": {str(k): v for k, v in sorted(citations.items())},
+                      "blocks": blocks}))
+    return 0
+
+
 # ---------------------------------------------------------------- claim support
 
 def _tokens(text: str) -> set:
@@ -450,17 +697,25 @@ def support_score(claim: str, snippets: list) -> float:
 
 
 def _jev_prescreen_report(run_dir: Path) -> dict:
-    """Call the advisory Jev pre-screen (trial dir) if this instance has Jev.
+    """Call the advisory Jev pre-screen (env-configured module) if present.
 
-    Returns a dict with ok + skipped/reason on any failure — including the
-    module being absent, the environment lacking TYPESAFE_KEY, network
-    errors, or an API failure. Never raises; never touches run_dir state.
+    The prescreen module path comes from `JEV_PRESCREEN_PATH` in the
+    environment — no hardcoded machine path. Returns a dict with ok +
+    skipped/reason on any failure — including the module being absent, the
+    environment lacking TYPESAFE_KEY, network errors, or an API failure.
+    Never raises; never touches run_dir state.
     """
+    env_ref = os.environ.get("JEV_PRESCREEN_PATH", "").strip()
+    if not env_ref:
+        return {"ok": False, "skipped": True,
+                "reason": "pre-screen unavailable (JEV_PRESCREEN_PATH not "
+                          "set) — deterministic gate runs alone",
+                "claims": 0}
+    prescreen_path = Path(env_ref)
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "jev_prescreen",
-            Path("/root/.hermes/data/jev-trial/jev_claim_prescreen.py"))
+            "jev_prescreen", prescreen_path)
         if spec is None or spec.loader is None:
             raise ImportError("prescreen module not found")
         mod = importlib.util.module_from_spec(spec)
@@ -477,8 +732,7 @@ def _jev_prescreen_report(run_dir: Path) -> dict:
                     "claims": 0}
         import subprocess, sys as _sys
         r = subprocess.run(
-            [_sys.executable, str(Path("/root/.hermes/data/jev-trial/"
-                                       + "jev_claim_prescreen.py")),
+            [_sys.executable, str(prescreen_path),
              "--dir", str(run_dir), "--conf-floor", "0.60"],
             capture_output=True, text=True, timeout=120)
         try:
@@ -947,6 +1201,32 @@ def main() -> int:
     s.add_argument("--dir", required=True)
     s.add_argument("--json", required=True)
     s.set_defaults(func=cmd_add_evidence)
+
+    s = sub.add_parser("check-quote",
+                       help="anchor verbatim snippets against saved page text (Step 3c)")
+    s.add_argument("--dir", default=None)
+    s.add_argument("--source-id", default=None, dest="source_id")
+    s.add_argument("--file", default=None,
+                   help="anchor against this page-text file directly (alternative to --dir/--source-id)")
+    s.add_argument("--snippet", action="append", required=True, dest="snippet",
+                   help="verbatim excerpt copied from the page; repeatable")
+    s.set_defaults(func=cmd_check_quote)
+
+    s = sub.add_parser("estimate-budget",
+                       help="upper bound of planned search queries (upstream estimateMaxSearches)")
+    s.add_argument("--breadth", type=int, required=True)
+    s.add_argument("--rounds", type=int, required=True)
+    s.add_argument("--halving", action="store_true",
+                   help="tree-mode upper bound: ceil(width/2) follow-up queries per level "
+                        "(deep-dive chains, SKILL.md §3a); default is flat breadth x rounds")
+    s.set_defaults(func=cmd_estimate_budget)
+
+    s = sub.add_parser("map-citations",
+                       help="map inline [N] citations to report blocks (Step 6 revision)")
+    s.add_argument("--report", required=True)
+    s.add_argument("--citation", type=int, default=None, dest="citation",
+                   help="only blocks citing this citation; exit 1 when none")
+    s.set_defaults(func=cmd_map_citations)
 
     s = sub.add_parser("verify-claims")
     s.add_argument("--dir", required=True)
