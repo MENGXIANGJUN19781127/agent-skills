@@ -125,14 +125,14 @@ def _parse_skill_md(skill_md: Path) -> tuple[str, str, str]:
         text = skill_md.read_text(errors="replace")
     except OSError as exc:
         logger.warning("Cannot read %s: %s", skill_md, exc)
-        return "", ""
+        return "", "", ""
     lines = text.splitlines()
 
     # Frontmatter must start at the first line (allowing optional BOM).
     first_line = lines[0].lstrip("\ufeff").strip() if lines else ""
     if first_line != "---":
         logger.warning("No YAML frontmatter in %s (first line is not '---')", skill_md)
-        return "", ""
+        return "", "", ""
 
     # Find the closing fence.
     close_idx = None
@@ -142,18 +142,18 @@ def _parse_skill_md(skill_md: Path) -> tuple[str, str, str]:
             break
     if close_idx is None:
         logger.warning("No closing YAML frontmatter fence in %s", skill_md)
-        return "", ""
+        return "", "", ""
 
     fm_text = "\n".join(lines[1:close_idx])
     try:
         data = yaml.safe_load(fm_text)
     except yaml.YAMLError:
         logger.warning("Malformed YAML frontmatter in %s", skill_md)
-        return "", ""
+        return "", "", ""
 
     if not isinstance(data, dict):
         logger.warning("Non-mapping YAML frontmatter in %s", skill_md)
-        return "", ""
+        return "", "", ""
 
     name = data.get("name")
     desc = data.get("description")
