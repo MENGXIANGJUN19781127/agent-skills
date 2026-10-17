@@ -81,6 +81,18 @@ def test_record_skill_joins_body_preview():
     assert skills3[0]["text"] == "plain: d"
 
 
+def test_index_text_join_contract():
+    """Shared helper for all three corpus paths (directory scan, registry,
+    legacy fallback): wrong-type/missing previews degrade to the base text;
+    ASCII previews do not join (English documents stay byte-identical);
+    CJK previews join once with a leading newline."""
+    assert br._index_text_join("name: d", None) == "name: d"
+    assert br._index_text_join("name: d", 42) == "name: d"
+    assert br._index_text_join("name: d", "") == "name: d"
+    assert br._index_text_join("name: d", "plain english") == "name: d"
+    assert br._index_text_join("name: d", "去 AI 味") == "name: d\n去 AI 味"
+
+
 def test_parse_skill_md_directory_and_missing_give_empty():
     """A directory or a missing path yields the 3-tuple of empty strings, so a
     registry skill_path that resolves wrong costs at most its body preview."""

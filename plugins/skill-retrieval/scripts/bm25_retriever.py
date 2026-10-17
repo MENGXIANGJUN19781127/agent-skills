@@ -232,6 +232,20 @@ def _frontmatter_keywords(frontmatter: dict) -> tuple[list[str], list[str]]:
     return triggers, tags
 
 
+def _index_text_join(base: str, body: object) -> str:
+    """Append the SKILL.md body preview to an indexed document.
+
+    The preview joins ONLY when it is a str that contains CJK characters:
+    CJK bigrams have target text to match Chinese queries against, while a
+    long ASCII preview would shift document lengths and IDF for every
+    English query. Anything else (missing key, wrong type) degrades to the
+    base text unchanged — the same contract the description-only corpus had.
+    """
+    if isinstance(body, str) and any("\u4e00" <= ch <= "\u9fff" for ch in body):
+        return base + "\n" + body
+    return base
+
+
 def _record_skill(skills: list[dict], seen_names: set[str], entry: dict, *, prefix: str = "") -> None:
     """Append a parsed Hermes skill entry while preserving first-seen precedence."""
     name = str(entry.get("frontmatter_name") or entry.get("skill_name") or "").strip()
@@ -248,20 +262,16 @@ def _record_skill(skills: list[dict], seen_names: set[str], entry: dict, *, pref
     triggers = entry.pop("_triggers", None)
     tags = entry.pop("_tags", None)
     body = entry.pop("_body_preview", None)
-    if body is not None and not isinstance(body, str):
-        # _parse_skill_md always returns str; an unbound key of the wrong
-        # type degrades to no preview instead of a TypeError at text join.
-        body = None
     text = f"{name}: {desc}"
     if triggers:
         text += " triggers: " + " ".join(triggers)
     if tags:
         text += " tags: " + " ".join(tags)
-    if body and any("\u4e00" <= ch <= "\u9fff" for ch in body):
-        # Only CJK-bearing previews join the document. A 3000-char ASCII
-        # preview would shift document lengths and IDF for every English
-        # query; CJK bigrams only have target text in the Chinese case.
-        text += "\n" + body
+    # _index_text_join degrades a missing/wrong-type preview to the base text
+    # (same contract _parse_skill_md's str-only previews already guaranteed)
+    # and joins a preview only when it contains CJK, so English documents
+    # stay byte-identical to the description-only corpus.
+    text = _index_text_join(text, body)
     skills.append({
         "skill_id": _skill_id_from_entry(entry, prefix=prefix),
         "leaf_name": str(entry.get("skill_name") or name),
@@ -458,14 +468,9 @@ def _load_active_skills_legacy(
             "description": desc,
             # Body preview joins the indexed text so CJK queries (bigrams) can
             # hit skill content beyond the frontmatter — most writing-skill
-            # descriptions are English while queries are Chinese. Only
-            # CJK-bearing previews join: an ASCII preview would shift document
-            # lengths and IDF for every English query.
-            "text": (
-                f"{name}: {desc}"
-                + ("\n" + body_preview
-                   if any("\u4e00" <= ch <= "\u9fff" for ch in body_preview) else "")
-            ),
+            # descriptions are English while queries are Chinese. The shared
+            # helper applies the same CJK gate as the primary paths.
+            "text": _index_text_join(f"{name}: {desc}", body_preview),
             # Legacy/fallback entries are not the plugin directory scan.
             "plugin_origin": False,
         })
@@ -622,10 +627,13 @@ def _load_active_skills_hermes(
             # CJK bigram tokenizer needs Chinese body text to match Chinese
             # queries against — most skill descriptions are English.
             # _parse_skill_md is a tested in-repo helper that always returns a
-            # 3-tuple of str and never raises; the arity guard only protects
-            # against future test stubs that reshape its return.
+            # 3-tuple of str and never raises; the tuple-guard degenerates a
+            # future stub's wrong shape to no preview instead of an IndexError
+            # escaping the (TypeError, AttributeError) systemic handler.
             parsed3 = _parse_skill_md(skill_file)
-            entry["_body_preview"] = parsed3[2] if len(parsed3) == 3 else ""
+            entry["_body_preview"] = (
+                parsed3[2] if isinstance(parsed3, tuple) and len(parsed3) >= 3 else ""
+            )
             _record_skill(skills, seen_names, entry, prefix=prefix)
         except (TypeError, AttributeError) as exc:
             # Signature change in a core helper is systemic, not per-file:
@@ -721,7 +729,9 @@ def _load_active_skills_hermes(
             body_src = body_src / "SKILL.md"
         if body_src is not None:
             parsed3 = _parse_skill_md(body_src)
-            entry["_body_preview"] = parsed3[2] if len(parsed3) == 3 else ""
+            entry["_body_preview"] = (
+                parsed3[2] if isinstance(parsed3, tuple) and len(parsed3) >= 3 else ""
+            )
         else:
             entry["_body_preview"] = ""
         # Registry ids are ``plugin:skill`` and are absent from <available_skills>.
