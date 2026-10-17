@@ -248,6 +248,10 @@ def _record_skill(skills: list[dict], seen_names: set[str], entry: dict, *, pref
     triggers = entry.pop("_triggers", None)
     tags = entry.pop("_tags", None)
     body = entry.pop("_body_preview", None)
+    if body is not None and not isinstance(body, str):
+        # _parse_skill_md always returns str; an unbound key of the wrong
+        # type degrades to no preview instead of a TypeError at text join.
+        body = None
     text = f"{name}: {desc}"
     if triggers:
         text += " triggers: " + " ".join(triggers)
@@ -617,9 +621,11 @@ def _load_active_skills_hermes(
             # Body preview joins the indexed document (see _record_skill): the
             # CJK bigram tokenizer needs Chinese body text to match Chinese
             # queries against — most skill descriptions are English.
-            # _parse_skill_md never raises; it re-reads the file once per
-            # indexed skill at index build.
-            entry["_body_preview"] = _parse_skill_md(skill_file)[2]
+            # _parse_skill_md is a tested in-repo helper that always returns a
+            # 3-tuple of str and never raises; the arity guard only protects
+            # against future test stubs that reshape its return.
+            parsed3 = _parse_skill_md(skill_file)
+            entry["_body_preview"] = parsed3[2] if len(parsed3) == 3 else ""
             _record_skill(skills, seen_names, entry, prefix=prefix)
         except (TypeError, AttributeError) as exc:
             # Signature change in a core helper is systemic, not per-file:
@@ -713,7 +719,11 @@ def _load_active_skills_hermes(
         body_src = Path(str(skill_path)) if skill_path else None
         if body_src is not None and body_src.is_dir():
             body_src = body_src / "SKILL.md"
-        entry["_body_preview"] = _parse_skill_md(body_src)[2] if body_src else ""
+        if body_src is not None:
+            parsed3 = _parse_skill_md(body_src)
+            entry["_body_preview"] = parsed3[2] if len(parsed3) == 3 else ""
+        else:
+            entry["_body_preview"] = ""
         # Registry ids are ``plugin:skill`` and are absent from <available_skills>.
         _record_skill(skills, seen_names, entry)
 
