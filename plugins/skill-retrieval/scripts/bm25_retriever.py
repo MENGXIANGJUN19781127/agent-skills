@@ -91,6 +91,31 @@ def _has_cjk(text: str) -> bool:
     )
 
 
+# Matches maximal runs of the bigram-covered CJK scripts inside a preview.
+_CJK_RUN_RE = re.compile(
+    "[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff66-\uff9f"
+    "\U00020000-\U0002a6df]+"
+)
+#: Capped budget for the joined CJK runs of one document: enough to hit
+#: content-bearing text at the top of a SKILL.md, small enough that BM25's
+#: length normalization (b=0.75) does not push the skill's English
+#: description matches out of the shortlist (a CJK-body skill is exactly
+#: the motivating case for English queries too).
+CJK_RUN_BUDGET = 600
+
+
+def _cjk_runs(body: str) -> str:
+    """Extract the covered CJK runs from a body preview, space-joined.
+
+    Only the runs join the document — never the 3000-char English body
+    around them — and the joined text is capped at CJK_RUN_BUDGET, so a
+    single CJK mention cannot put ~2500 bigrams into an English document
+    and a Chinese body cannot dominate the length normalization.
+    """
+    runs = " ".join(m.group() for m in _CJK_RUN_RE.finditer(body))
+    return runs[:CJK_RUN_BUDGET]
+
+
 def tokenize(text: str) -> list[str]:
     """Simple whitespace + punctuation tokenizer, lowercased.
 
@@ -122,11 +147,23 @@ def tokenize(text: str) -> list[str]:
         if len(token) == 1 or not _has_cjk(token):
             tokens.append(token)
             continue
-        # Bigrams only. For a 2-character token the single bigram IS the
-        # token; appending it and its bigram would emit the same string
-        # twice and double-count its TF on documents and queries.
-        for i in range(len(token) - 1):
-            tokens.append(token[i : i + 2])
+        # Mixed-script tokens: split into ASCII runs and CJK runs first, so
+        # '用python写' keeps the 'python' term and 'Python으로' keeps the
+        # 'python' term; each CJK run is then bigrammed on its own.
+        for part in re.findall(r"[a-z0-9]+|[^a-z0-9]+", token):
+            if part[0].isascii():
+                tokens.append(part)
+                continue
+            if len(part) == 1:
+                # Single CJK character: emitted as itself (covered by the
+                # len==1 rule for whole tokens).
+                tokens.append(part)
+                continue
+            # Bigrams only. For a 2-character run the single bigram IS the
+            # run; appending it and its bigram would emit the same string
+            # twice and double-count its TF on documents and queries.
+            for i in range(len(part) - 1):
+                tokens.append(part[i : i + 2])
     return tokens
 
 
@@ -254,16 +291,20 @@ def _frontmatter_keywords(frontmatter: dict) -> tuple[list[str], list[str]]:
 
 
 def _index_text_join(base: str, body: object) -> str:
-    """Append the SKILL.md body preview to an indexed document.
+    """Extract the CJK runs of a SKILL.md body preview into its document.
 
-    The preview joins ONLY when it is a str that contains CJK characters:
-    CJK bigrams have target text to match Chinese queries against, while a
-    long ASCII preview would shift document lengths and IDF for every
-    English query. Anything else (missing key, wrong type) degrades to the
+    The runs join ONLY when the body is a str containing CJK characters,
+    space-joined and capped at CJK_RUN_BUDGET: the bigram tokenizer gets
+    target text for CJK queries, while the English body text around the
+    runs contributes nothing (no recall or length shift in the English
+    corpus — the query-relevant skill keeps its description score).
+    Anything else (missing key, wrong type, CJK-free body) degrades to the
     base text unchanged — the same contract the description-only corpus had.
     """
     if isinstance(body, str) and _has_cjk(body):
-        return base + "\n" + body
+        runs = _cjk_runs(body)
+        if runs:
+            return base + "\n" + runs
     return base
 
 

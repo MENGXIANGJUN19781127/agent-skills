@@ -65,7 +65,7 @@ def test_record_skill_joins_body_preview():
         "_body_preview": "去 AI 味修改对白",
     })
     assert skills[0]["text"].startswith("demo: English only")
-    assert "去 AI 味修改对白" in skills[0]["text"]
+    assert "去 味修改对白" in skills[0]["text"]
     # CJK-free preview is ignored (English documents stay byte-identical).
     skills2 = []
     br._record_skill(skills2, set(), {
@@ -84,13 +84,31 @@ def test_record_skill_joins_body_preview():
 def test_index_text_join_contract():
     """Shared helper for all three corpus paths (directory scan, registry,
     legacy fallback): wrong-type/missing previews degrade to the base text;
-    ASCII previews do not join (English documents stay byte-identical);
-    CJK previews join once with a leading newline."""
+    CJK-free previews never join (English documents stay byte-identical);
+    a CJK-bearing preview contributes ONLY its space-joined CJK runs,
+    capped at CJK_RUN_BUDGET — the English body text around the runs never
+    joins, so a single CJK mention cannot shift an English document's length
+    or recall."""
     assert br._index_text_join("name: d", None) == "name: d"
     assert br._index_text_join("name: d", 42) == "name: d"
     assert br._index_text_join("name: d", "") == "name: d"
     assert br._index_text_join("name: d", "plain english") == "name: d"
-    assert br._index_text_join("name: d", "去 AI 味") == "name: d\n去 AI 味"
+    assert br._index_text_join("name: d", "去 AI 味") == "name: d\n去 味"
+    # Long English body with ONE CJK mention: only the mention joins.
+    body = "English prose " + "filler " * 500 + "中文 end"
+    joined = br._index_text_join("name: d", body)
+    assert joined == "name: d\n中文"
+    # Cap: joined runs truncated at the budget, at most CJK_RUN_BUDGET chars.
+    long_runs = "去到" * 700
+    assert len(br._index_text_join("name: d", long_runs)) <= len("name: d\n") + br.CJK_RUN_BUDGET + 2
+
+
+def test_mixed_script_tokens_keep_ascii_terms():
+    """Regression (review, locked): a mixed-script token splits into ASCII
+    runs (kept whole as terms) and CJK runs (bigrammed on their own)."""
+    assert br.tokenize("用python写") == ["用", "python", "写"]
+    assert br.tokenize("Python으로") == ["python", "으로"]
+    assert br.tokenize("API를호출") == ["api", "를호", "호출"]
 
 
 def test_cjk_scripts_beyond_ideographs_bigram():

@@ -168,17 +168,18 @@ silently empty. After restart, check the Hermes logs.
 ## How it works
 
 - **Tokenizer** — lowercases text, strips punctuation, splits on whitespace.
-  Tokens containing CJK-script characters are additionally split into bigrams
-  (CJK has no whitespace boundaries): CJK Unified Ideographs incl. Extension A
-  and B, Japanese kana, and hangul syllables — so Chinese and Japanese queries
-  can match non-English corpus text.
+  Tokens with CJK-script characters are split into bigrams (for CJK-script
+  runs; a 3+-character run is replaced by its bigrams): CJK Unified Ideographs
+  incl. Extension A and B, Japanese kana (fullwidth and halfwidth), and hangul
+  syllables — so Chinese, Japanese and Korean queries can match non-English
+  corpus text, and a mixed token like `用python写` keeps the `python` term.
 - **Corpus** — each skill becomes `"name: description"` plus its frontmatter
-  `triggers:` list and `metadata.hermes.tags` (when present) and — when it
-  contains CJK characters — a 3000-character preview of the SKILL.md body after
-  the frontmatter. CJK runs have no whitespace
-  boundaries, so the tokenizer emits bigrams for them; with the body preview in
-  the corpus a Chinese query can match skill *content*, not just the (usually
-  English) description. Trigger phrases, tags and the body participate in
+  `triggers:` list and `metadata.hermes.tags` (when present) and — when the
+  SKILL.md body contains CJK-script characters — the space-joined CJK runs of
+  the body's first ~3000 characters, capped at 600 characters total. With the
+  body in
+  the corpus a CJK query can match skill *content*, not just the (usually
+  English) description. Trigger phrases, tags and the CJK runs participate in
   retrieval scoring but only the
   description is injected into the prompt. Disabled skills from
   `~/.hermes/config.yaml` are skipped.
