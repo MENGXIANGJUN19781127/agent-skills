@@ -41,6 +41,35 @@ def test_tokenize_emits_cjk_bigrams():
     assert "\u4fee\u6539" in toks and "\u5bf9\u767d" in toks
 
 
+def test_tokenize_emits_2char_cjk_token_once():
+    """A 2-character CJK token IS its own bigram; it must be emitted exactly
+    once. Emitting the token and its bigram appends the same string twice and
+    double-counts its TF in documents and queries."""
+    assert br.tokenize("对白") == ["对白"]
+
+
+def test_record_skill_joins_body_preview():
+    """The primary (Hermes-scan) corpus path documents name: desc + triggers +
+    tags + body preview. Without the preview the CJK bigram tokenizer has no
+    Chinese text to match Chinese queries against (most descriptions are
+    English)."""
+    skills = []
+    br._record_skill(skills, set(), {
+        "skill_name": "demo", "frontmatter_name": "demo",
+        "description": "English only",
+        "_triggers": ["hook"], "_tags": ["write"],
+        "_body_preview": "去 AI 味修改对白",
+    })
+    assert skills[0]["text"].startswith("demo: English only")
+    assert "去 AI 味修改对白" in skills[0]["text"]
+    # No preview → text unchanged (legacy callers never set the key).
+    skills2 = []
+    br._record_skill(skills2, set(), {
+        "skill_name": "plain", "frontmatter_name": "plain", "description": "d",
+    })
+    assert skills2[0]["text"] == "plain: d"
+
+
 def test_tokenize_leaves_ascii_unchanged():
     assert br.tokenize("Dialogue Polish Remove AI Tone") == [
         "dialogue", "polish", "remove", "ai", "tone"]

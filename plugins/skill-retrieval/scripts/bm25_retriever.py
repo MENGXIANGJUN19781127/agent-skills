@@ -96,14 +96,14 @@ def tokenize(text: str) -> list[str]:
     for token in text.split():
         # CJK runs have no whitespace boundaries: a whole Chinese sentence would
         # otherwise become ONE token and match nothing in the index. Emit
-        # bigrams (plus the token itself when it is a single CJK char) so a
-        # Chinese query can hit Chinese corpus text. ASCII tokens pass through
-        # unchanged.
+        # bigrams so a Chinese query can hit Chinese corpus text. ASCII
+        # tokens pass through unchanged.
         if len(token) == 1 or not any("\u4e00" <= ch <= "\u9fff" for ch in token):
             tokens.append(token)
             continue
-        if len(token) == 2:
-            tokens.append(token)
+        # Bigrams only. For a 2-character token the single bigram IS the
+        # token; appending it and its bigram would emit the same string
+        # twice and double-count its TF on documents and queries.
         for i in range(len(token) - 1):
             tokens.append(token[i : i + 2])
     return tokens
@@ -239,17 +239,22 @@ def _record_skill(skills: list[dict], seen_names: set[str], entry: dict, *, pref
         return
     seen_names.add(name)
     desc = str(entry.get("description") or "")
-    # Trigger phrases and tags broaden BM25 recall beyond the description:
-    # the indexed document is the retrieval surface (name: desc + lists),
-    # while only the description is injected. A skill that declares triggers
-    # can fire on queries the short description cannot cover.
+    # Trigger phrases, tags and the body preview broaden BM25 recall beyond
+    # the description: the indexed document is the retrieval surface
+    # (name: desc + lists + body preview), while only the description is
+    # injected. Trigger phrases cover queries the short description cannot;
+    # the CJK bigram tokenizer needs Chinese body text to match Chinese
+    # queries against.
     triggers = entry.pop("_triggers", None)
     tags = entry.pop("_tags", None)
+    body = entry.pop("_body_preview", None)
     text = f"{name}: {desc}"
     if triggers:
         text += " triggers: " + " ".join(triggers)
     if tags:
         text += " tags: " + " ".join(tags)
+    if body:
+        text += "\n" + body
     skills.append({
         "skill_id": _skill_id_from_entry(entry, prefix=prefix),
         "leaf_name": str(entry.get("skill_name") or name),
@@ -600,6 +605,12 @@ def _load_active_skills_hermes(
                 return
             if not _skill_doc_is_visible(entry, visible_names):
                 return
+            # Body preview joins the indexed document (see _record_skill): the
+            # CJK bigram tokenizer needs Chinese body text to match Chinese
+            # queries against — most skill descriptions are English.
+            # _parse_skill_md never raises; it re-reads the file once per
+            # indexed skill at index build.
+            entry["_body_preview"] = _parse_skill_md(skill_file)[2]
             _record_skill(skills, seen_names, entry, prefix=prefix)
         except (TypeError, AttributeError) as exc:
             # Signature change in a core helper is systemic, not per-file:
@@ -686,6 +697,10 @@ def _load_active_skills_hermes(
             "description": desc,
         }
         entry["_triggers"], entry["_tags"] = _frontmatter_keywords(frontmatter)
+        # Same body-preview join as the directory scan (see _record_skill).
+        entry["_body_preview"] = (
+            _parse_skill_md(Path(str(skill_path)))[2] if skill_path else ""
+        )
         # Registry ids are ``plugin:skill`` and are absent from <available_skills>.
         _record_skill(skills, seen_names, entry)
 
