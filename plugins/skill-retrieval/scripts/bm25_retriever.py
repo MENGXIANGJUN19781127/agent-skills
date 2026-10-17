@@ -91,17 +91,25 @@ def _has_cjk(text: str) -> bool:
     )
 
 
-# Matches maximal runs of the bigram-covered CJK scripts inside a preview.
+# Matches maximal runs of the covered CJK scripts inside a preview.
 _CJK_RUN_RE = re.compile(
     "[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff66-\uff9f"
     "\U00020000-\U0002a6df]+"
 )
+# Splits a lowercased token into ASCII runs, covered-CJK runs, and single
+# leftover non-ASCII characters (so a mixed-script token keeps its Latin
+# terms instead of welding them into a bigram with a CJK character).
+_SCRIPT_SPLIT_RE = re.compile(
+    "[a-z0-9]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff66-\uff9f"
+    "\U00020000-\U0002a6df]+|[^a-z0-9\\s]"
+)
 #: Capped budget for the joined CJK runs of one document: enough to hit
-#: content-bearing text at the top of a SKILL.md, small enough that BM25's
-#: length normalization (b=0.75) does not push the skill's English
-#: description matches out of the shortlist (a CJK-body skill is exactly
+#: content-bearing text at the top of a SKILL.md for the short CJK queries
+#: the tokenizer serves, small enough that BM25's length normalization
+#: (b=0.75) does not push the skill's English-description matches far down
+#: when it ranks against CJK-free competitors (a CJK-body skill is exactly
 #: the motivating case for English queries too).
-CJK_RUN_BUDGET = 600
+CJK_RUN_BUDGET = 200
 
 
 def _cjk_runs(body: str) -> str:
@@ -147,10 +155,11 @@ def tokenize(text: str) -> list[str]:
         if len(token) == 1 or not _has_cjk(token):
             tokens.append(token)
             continue
-        # Mixed-script tokens: split into ASCII runs and CJK runs first, so
-        # '用python写' keeps the 'python' term and 'Python으로' keeps the
-        # 'python' term; each CJK run is then bigrammed on its own.
-        for part in re.findall(r"[a-z0-9]+|[^a-z0-9]+", token):
+        # Mixed-script tokens: split into ASCII runs, CJK runs, and per-char
+        # leftover (e.g. 'é'), so '用python写' keeps the 'python' term,
+        # 'Python으로' keeps the 'python' term, and 'café中文' does not weld
+        # 'é' and '中' into one token.
+        for part in _SCRIPT_SPLIT_RE.findall(token):
             if part[0].isascii():
                 tokens.append(part)
                 continue

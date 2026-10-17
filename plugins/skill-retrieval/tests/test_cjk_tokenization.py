@@ -111,6 +111,13 @@ def test_mixed_script_tokens_keep_ascii_terms():
     assert br.tokenize("API를호출") == ["api", "를호", "호출"]
 
 
+def test_accented_latin_not_welded_to_cjk():
+    """Regression (review): the leftover per-char alternative keeps accented
+    Latin outside the CJK bigrams — 'café中文' splits instead of welding
+    'é中' into one term."""
+    assert br.tokenize("café中文") == ["caf", "é", "中文"]
+
+
 def test_cjk_scripts_beyond_ideographs_bigram():
     """Regression (review, locked): the bigram pass covers kana (incl.
     halfwidth), hangul and CJK Extension A — with exact expected bigrams so a

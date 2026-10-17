@@ -176,7 +176,7 @@ silently empty. After restart, check the Hermes logs.
 - **Corpus** — each skill becomes `"name: description"` plus its frontmatter
   `triggers:` list and `metadata.hermes.tags` (when present) and — when the
   SKILL.md body contains CJK-script characters — the space-joined CJK runs of
-  the body's first ~3000 characters, capped at 600 characters total. With the
+  the body's first ~3000 characters, capped at 200 characters total. With the
   body in
   the corpus a CJK query can match skill *content*, not just the (usually
   English) description. Trigger phrases, tags and the CJK runs participate in
