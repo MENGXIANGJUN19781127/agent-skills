@@ -168,9 +168,12 @@ silently empty. After restart, check the Hermes logs.
 ## How it works
 
 - **Tokenizer** — lowercases text, strips punctuation, splits on whitespace.
+  Tokens containing CJK characters are additionally split into bigrams (CJK has
+  no whitespace boundaries), so Chinese queries can match Chinese corpus text.
 - **Corpus** — each skill becomes `"name: description"` plus its frontmatter
-  `triggers:` list and `metadata.hermes.tags` (when present) and a 3000-character
-  preview of the SKILL.md body after the frontmatter. CJK runs have no whitespace
+  `triggers:` list and `metadata.hermes.tags` (when present) and — when it
+  contains CJK characters — a 3000-character preview of the SKILL.md body after
+  the frontmatter. CJK runs have no whitespace
   boundaries, so the tokenizer emits bigrams for them; with the body preview in
   the corpus a Chinese query can match skill *content*, not just the (usually
   English) description. Trigger phrases, tags and the body participate in

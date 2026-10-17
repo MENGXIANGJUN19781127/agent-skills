@@ -253,7 +253,10 @@ def _record_skill(skills: list[dict], seen_names: set[str], entry: dict, *, pref
         text += " triggers: " + " ".join(triggers)
     if tags:
         text += " tags: " + " ".join(tags)
-    if body:
+    if body and any("\u4e00" <= ch <= "\u9fff" for ch in body):
+        # Only CJK-bearing previews join the document. A 3000-char ASCII
+        # preview would shift document lengths and IDF for every English
+        # query; CJK bigrams only have target text in the Chinese case.
         text += "\n" + body
     skills.append({
         "skill_id": _skill_id_from_entry(entry, prefix=prefix),
@@ -451,8 +454,14 @@ def _load_active_skills_legacy(
             "description": desc,
             # Body preview joins the indexed text so CJK queries (bigrams) can
             # hit skill content beyond the frontmatter — most writing-skill
-            # descriptions are English while queries are Chinese.
-            "text": f"{name}: {desc}\n{body_preview}",
+            # descriptions are English while queries are Chinese. Only
+            # CJK-bearing previews join: an ASCII preview would shift document
+            # lengths and IDF for every English query.
+            "text": (
+                f"{name}: {desc}"
+                + ("\n" + body_preview
+                   if any("\u4e00" <= ch <= "\u9fff" for ch in body_preview) else "")
+            ),
             # Legacy/fallback entries are not the plugin directory scan.
             "plugin_origin": False,
         })
@@ -698,9 +707,13 @@ def _load_active_skills_hermes(
         }
         entry["_triggers"], entry["_tags"] = _frontmatter_keywords(frontmatter)
         # Same body-preview join as the directory scan (see _record_skill).
-        entry["_body_preview"] = (
-            _parse_skill_md(Path(str(skill_path)))[2] if skill_path else ""
-        )
+        # skill_path should be the SKILL.md file; resolve one level deeper if
+        # a directory is passed, so registry skills are not silently left
+        # with no body preview.
+        body_src = Path(str(skill_path)) if skill_path else None
+        if body_src is not None and body_src.is_dir():
+            body_src = body_src / "SKILL.md"
+        entry["_body_preview"] = _parse_skill_md(body_src)[2] if body_src else ""
         # Registry ids are ``plugin:skill`` and are absent from <available_skills>.
         _record_skill(skills, seen_names, entry)
 

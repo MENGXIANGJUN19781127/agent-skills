@@ -1,5 +1,8 @@
 """CJK tokenization and _parse_skill_md return-shape regression tests."""
 
+import tempfile
+from pathlib import Path
+
 import bm25_retriever as br
 
 
@@ -50,9 +53,10 @@ def test_tokenize_emits_2char_cjk_token_once():
 
 def test_record_skill_joins_body_preview():
     """The primary (Hermes-scan) corpus path documents name: desc + triggers +
-    tags + body preview. Without the preview the CJK bigram tokenizer has no
-    Chinese text to match Chinese queries against (most descriptions are
-    English)."""
+    tags + CJK-bearing body preview. Without the preview the CJK bigram
+    tokenizer has no Chinese text to match Chinese queries against (most
+    descriptions are English). An ASCII-only preview does NOT join: it would
+    shift document lengths and IDF for every English query."""
     skills = []
     br._record_skill(skills, set(), {
         "skill_name": "demo", "frontmatter_name": "demo",
@@ -62,12 +66,27 @@ def test_record_skill_joins_body_preview():
     })
     assert skills[0]["text"].startswith("demo: English only")
     assert "去 AI 味修改对白" in skills[0]["text"]
-    # No preview → text unchanged (legacy callers never set the key).
+    # CJK-free preview is ignored (English documents stay byte-identical).
     skills2 = []
     br._record_skill(skills2, set(), {
+        "skill_name": "english", "frontmatter_name": "english",
+        "description": "d", "_body_preview": "plain english body text",
+    })
+    assert skills2[0]["text"] == "english: d"
+    # No preview → text unchanged (legacy callers never set the key).
+    skills3 = []
+    br._record_skill(skills3, set(), {
         "skill_name": "plain", "frontmatter_name": "plain", "description": "d",
     })
-    assert skills2[0]["text"] == "plain: d"
+    assert skills3[0]["text"] == "plain: d"
+
+
+def test_parse_skill_md_directory_and_missing_give_empty():
+    """A directory or a missing path yields the 3-tuple of empty strings, so a
+    registry skill_path that resolves wrong costs at most its body preview."""
+    assert br._parse_skill_md(Path("/definitely/missing/SKILL.md")) == ("", "", "")
+    with tempfile.TemporaryDirectory() as d:
+        assert br._parse_skill_md(Path(d)) == ("", "", "")
 
 
 def test_tokenize_leaves_ascii_unchanged():
