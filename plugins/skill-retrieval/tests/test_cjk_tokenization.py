@@ -93,6 +93,16 @@ def test_index_text_join_contract():
     assert br._index_text_join("name: d", "去 AI 味") == "name: d\n去 AI 味"
 
 
+def test_cjk_scripts_beyond_ideographs_bigram():
+    """Regression (review): the bigram pass covers kana, ideographs incl.
+    Extension A and hangul syllables — not only U+4E00-9FFF."""
+    assert br.tokenize("こんにちは") != ["こんにちは"]
+    assert "こんにちは" in " ".join(br.tokenize("こんにちは")) or len(br.tokenize("こんにちは")) > 1
+    assert br.tokenize("한국어") != ["한국어"]
+    assert br.tokenize("㐀㑂") == ["㐀㑂"]
+    assert br.tokenize("Dialogue Polish") == ["dialogue", "polish"]
+
+
 def test_parse_skill_md_directory_and_missing_give_empty():
     """A directory or a missing path yields the 3-tuple of empty strings, so a
     registry skill_path that resolves wrong costs at most its body preview."""

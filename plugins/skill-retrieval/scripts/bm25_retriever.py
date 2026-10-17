@@ -70,6 +70,25 @@ B = 0.75
 
 # ─── Tokenizer ────────────────────────────────────────────────────────────────
 
+# CJK-like scripts the bigram tokenizer covers: kana, ideographs (Unified
+# + Extension A/B) and hangul syllables. Everything below U+3040 with a
+# word boundary in the corpus behaves like the whitespace languages.
+CJK_RANGES = (
+    (0x3040, 0x30FF),    # Hiragana + Katakana
+    (0x3400, 0x4DBF),    # CJK Extension A
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0xAC00, 0xD7AF),    # Hangul syllables
+    (0x20000, 0x2A6DF),  # CJK Extension B (supplementary plane)
+)
+
+
+def _has_cjk(text: str) -> bool:
+    """True when any character sits in one of the bigram-covered CJK ranges."""
+    return any(
+        lo <= ord(ch) <= hi for ch in text for lo, hi in CJK_RANGES
+    )
+
+
 def tokenize(text: str) -> list[str]:
     """Simple whitespace + punctuation tokenizer, lowercased.
 
@@ -94,11 +113,11 @@ def tokenize(text: str) -> list[str]:
     text = re.sub(r"[^\w\s]", " ", text)
     tokens: list[str] = []
     for token in text.split():
-        # CJK runs have no whitespace boundaries: a whole Chinese sentence would
-        # otherwise become ONE token and match nothing in the index. Emit
-        # bigrams so a Chinese query can hit Chinese corpus text. ASCII
-        # tokens pass through unchanged.
-        if len(token) == 1 or not any("\u4e00" <= ch <= "\u9fff" for ch in token):
+        # CJK runs have no whitespace boundaries: a whole Chinese/ Japanese/
+        # Korean sentence would otherwise become ONE token and match nothing
+        # in the index. Emit bigrams so such a query can hit corpus text.
+        # ASCII tokens pass through unchanged.
+        if len(token) == 1 or not _has_cjk(token):
             tokens.append(token)
             continue
         # Bigrams only. For a 2-character token the single bigram IS the
@@ -241,7 +260,7 @@ def _index_text_join(base: str, body: object) -> str:
     English query. Anything else (missing key, wrong type) degrades to the
     base text unchanged — the same contract the description-only corpus had.
     """
-    if isinstance(body, str) and any("\u4e00" <= ch <= "\u9fff" for ch in body):
+    if isinstance(body, str) and _has_cjk(body):
         return base + "\n" + body
     return base
 
