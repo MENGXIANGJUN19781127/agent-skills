@@ -70,14 +70,16 @@ B = 0.75
 
 # ─── Tokenizer ────────────────────────────────────────────────────────────────
 
-# CJK-like scripts the bigram tokenizer covers: kana, ideographs (Unified
-# + Extension A/B) and hangul syllables. Everything below U+3040 with a
-# word boundary in the corpus behaves like the whitespace languages.
+# CJK-like scripts the bigram tokenizer covers: kana (fullwidth + halfwidth),
+# ideographs (Unified + Extension A/B) and hangul syllables. Everything below
+# U+3040 with a word boundary in the corpus behaves like the whitespace
+# languages.
 CJK_RANGES = (
     (0x3040, 0x30FF),    # Hiragana + Katakana
     (0x3400, 0x4DBF),    # CJK Extension A
     (0x4E00, 0x9FFF),    # CJK Unified Ideographs
     (0xAC00, 0xD7AF),    # Hangul syllables
+    (0xFF66, 0xFF9F),    # Halfwidth Katakana
     (0x20000, 0x2A6DF),  # CJK Extension B (supplementary plane)
 )
 

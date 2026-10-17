@@ -94,11 +94,12 @@ def test_index_text_join_contract():
 
 
 def test_cjk_scripts_beyond_ideographs_bigram():
-    """Regression (review): the bigram pass covers kana, ideographs incl.
-    Extension A and hangul syllables — not only U+4E00-9FFF."""
-    assert br.tokenize("こんにちは") != ["こんにちは"]
-    assert "こんにちは" in " ".join(br.tokenize("こんにちは")) or len(br.tokenize("こんにちは")) > 1
-    assert br.tokenize("한국어") != ["한국어"]
+    """Regression (review, locked): the bigram pass covers kana (incl.
+    halfwidth), hangul and CJK Extension A — with exact expected bigrams so a
+    pass-through one-token return cannot satisfy the test."""
+    assert br.tokenize("こんにちは") == ["こん", "んに", "にち", "ちは"]
+    assert br.tokenize("ｶﾀｶﾅ") == ["ｶﾀ", "ﾀｶ", "ｶﾅ"]
+    assert br.tokenize("한국어") == ["한국", "국어"]
     assert br.tokenize("㐀㑂") == ["㐀㑂"]
     assert br.tokenize("Dialogue Polish") == ["dialogue", "polish"]
 
